@@ -210,30 +210,36 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
-    openCustomerModal(c = null) {
-    alert('有點到新增客戶');
-        
-      if (c) {
-        this.editingCustomer = c;
-        this.customerForm = { ...c };
-        this.customerLocalContacts = JSON.parse(JSON.stringify(this.contacts.filter(con => con.customerId === c.customerId)));
-      } else {
-        this.editingCustomer = null;
-        this.customerForm = {
-          customerId: makeId('C'),
-          companyName: '',
-          taxId: '',
-          territory: this.masterData.territories[0] || '',
-          industry: '',
-          address: '',
-          phone: '',
-          updatedAt: todayString()
-        };
-        this.customerLocalContacts = [];
-      }
-      this.customerModalOpen = true;
-      this.$nextTick(() => { lucide.createIcons(); });
-    },
+   openCustomerModal(c = null) {
+  try {
+    if (c) {
+      this.editingCustomer = c;
+      this.customerForm = { ...c };
+      this.customerLocalContacts = JSON.parse(JSON.stringify(
+        this.contacts.filter(con => con.customerId === c.customerId)
+      ));
+    } else {
+      this.editingCustomer = null;
+      this.customerForm = {
+        customerId: makeId('C'),
+        companyName: '',
+        taxId: '',
+        territory: this.masterData.territories?.[0] || '北區',
+        industry: '',
+        address: '',
+        phone: '',
+        updatedAt: todayString()
+      };
+      this.customerLocalContacts = [];
+    }
+
+    this.customerModalOpen = true;
+    this.$nextTick(() => { lucide.createIcons(); });
+  } catch (err) {
+    console.error('openCustomerModal error:', err);
+    alert('開啟客戶視窗失敗，請看 Console 錯誤');
+  }
+},
 
     closeCustomerModal() { this.customerModalOpen = false; },
 
