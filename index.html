@@ -211,6 +211,8 @@ document.addEventListener('alpine:init', () => {
     },
 
     openCustomerModal(c = null) {
+    alert('有點到新增客戶');
+        
       if (c) {
         this.editingCustomer = c;
         this.customerForm = { ...c };
