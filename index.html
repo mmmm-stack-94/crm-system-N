@@ -286,20 +286,28 @@ document.addEventListener('alpine:init', () => {
         return;
       }
 
-      await this.refreshData();
-      this.closeCustomerModal();
+this.closeCustomerModal();
+await this.refreshData();
     },
 
-    async deleteCustomer(customerId) {
-      if (!confirm('確定要刪除此客戶嗎？所有關聯資料也將移除。')) return;
+async deleteCustomer(customerId) {
+  if (!confirm('確定要刪除此客戶嗎？所有關聯資料也將移除。')) return;
 
-      const result = await apiPost('deleteCustomer', { customerId });
-      if (!result.success) {
-        alert(result.message || '刪除客戶失敗');
-        return;
-      }
-      await this.refreshData();
-    },
+  // 先更新畫面，使用者會覺得很快
+  this.customers = this.customers.filter(c => c.customerId !== customerId);
+  this.contacts = this.contacts.filter(c => c.customerId !== customerId);
+  this.projects = this.projects.filter(p => p.customerId !== customerId);
+
+  const result = await apiPost('deleteCustomer', { customerId });
+
+  if (!result.success) {
+    alert(result.message || '刪除客戶失敗，請重新整理確認資料');
+    await this.refreshData();
+    return;
+  }
+
+  await this.refreshData();
+},
 
     sortedProjects() {
       return [...this.projects].sort((a, b) => {
@@ -356,8 +364,8 @@ document.addEventListener('alpine:init', () => {
         return;
       }
 
-      await this.refreshData();
-      this.closeProjectModal();
+this.closeProjectModal();
+await this.refreshData();
     },
 
     getProjectLogs() {
@@ -591,7 +599,6 @@ document.addEventListener('alpine:init', () => {
                                         <th class="px-6 py-4 font-bold">公司名稱</th>
                                         <th class="px-6 py-4 font-bold">管區</th>
                                         <th class="px-6 py-4 font-bold">產業</th>
-                                        <th class="px-6 py-4 font-bold text-center">窗口數</th>
                                         <th class="px-6 py-4 font-bold">最後更新</th>
                                         <th class="px-6 py-4 font-bold text-center">操作</th>
                                     </tr>
@@ -602,7 +609,6 @@ document.addEventListener('alpine:init', () => {
                                             <td class="px-6 py-5 font-bold text-slate-900 group-hover:text-blue-600 transition-colors" x-text="c.companyName"></td>
                                             <td class="px-6 py-5"><span class="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold" x-text="c.territory"></span></td>
                                             <td class="px-6 py-5 text-slate-500 font-medium" x-text="c.industry"></td>
-                                            <td class="px-6 py-5 text-center font-bold text-slate-400" x-text="contacts.filter(con => con.customerId === c.customerId).length"></td>
                                             <td class="px-6 py-5 text-slate-500 font-medium" x-text="c.updatedAt"></td>
                                             <td class="px-6 py-5">
                                                 <div class="flex justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
