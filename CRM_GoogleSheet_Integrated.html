@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRM 專業客戶案件管理系統</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        [x-cloak] { display: none !important; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
+    </style>
+
+<script>
+const API_BASE = 'https://script.google.com/macros/s/AKfycbzqNqsVfXRBuYI8EkhM0szIww_sqwA7xC_-ASr1_Kl7K3V917bbzGyzbE2Y3WvcWDyI/exec';
+
+async function apiGet(action) {
+  const res = await fetch(`${API_BASE}?action=${action}`);
+  return await res.json();
+}
+
+async function apiPost(action, payload) {
+  const res = await fetch(API_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, payload })
+  });
+  return await res.json();
+}
+
+function todayString() {
+  return new Date().toISOString().split('T')[0];
+}
+
+function makeId(prefix) {
+  return prefix + Date.now() + Math.floor(Math.random() * 1000);
+}
+
+function normalizeDate(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value.includes('T') ? value.split('T')[0] : value;
+  try { return new Date(value).toISOString().split('T')[0]; } catch (e) { return value; }
+}
+
+function normalizeTimestamp(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : new Date(value || Date.now()).getTime();
+}
+
+document.addEventListener('alpine:init', () => {
+  Alpine.data('crmApp', () => ({
+    isLoggedIn: false,
+    userAccount: 'Admin',
+    view: 'login',
+    dashboardLogTab: 'pending',
+    projectSortBy: 'updatedAt',
+    loading: false,
+    loginForm: { account: '', password: '' },
+    registerForm: { account: '', password: '', userName: '' },
+
+    masterData: {
+      territories: ['北區', '中區', '南區', '海外'],
+      projectStatuses: ['商機開發', '報價', 'POC', 'PENDING', 'Fail', '成案'],
+      productTypes: ['AWS', 'AZURE', 'GCP', 'hicloud', 'GWS', 'M365'],
+      bdList: ['業務A', '業務B', '業務C'],
+      publicCloudContacts: ['王小明', '李大華'],
+      digitalContacts: ['數產一員'],
+      cloudContacts: ['雲端專員A']
+    },
+
+    customers: [],
+    contacts: [],
+    projects: [],
+    logs: [],
+
+    customerModalOpen: false,
+    projectModalOpen: false,
+    editingCustomer: null,
+    editingProject: null,
+    newLogInput: '',
+    editingLogContentId: null,
+    editingLogDateId: null,
+
+    customerForm: {},
+    customerLocalContacts: [],
+    projectForm: {},
+
+    async init() {
+      await this.refreshData();
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    normalizeInitData(data) {
+      const fallback = this.masterData;
+      this.customers = (data.customers || []).map(c => ({ ...c, updatedAt: normalizeDate(c.updatedAt) }));
+      this.contacts = data.contacts || [];
+      this.projects = (data.projects || []).map(p => ({
+        ...p,
+        opportunityDate: normalizeDate(p.opportunityDate),
+        closeDate: normalizeDate(p.closeDate),
+        updatedAt: normalizeDate(p.updatedAt)
+      }));
+      this.logs = (data.logs || []).map(l => ({
+        ...l,
+        isDone: String(l.isDone).toLowerCase() === 'true',
+        createdAt: normalizeDate(l.createdAt),
+        updatedAt: normalizeDate(l.updatedAt),
+        timestamp: normalizeTimestamp(l.timestamp)
+      }));
+
+      const md = data.masterData || {};
+      this.masterData = {
+        territories: md.territories?.length ? md.territories : fallback.territories,
+        projectStatuses: md.projectStatuses?.length ? md.projectStatuses : fallback.projectStatuses,
+        productTypes: md.productTypes?.length ? md.productTypes : fallback.productTypes,
+        bdList: md.bdList?.length ? md.bdList : fallback.bdList,
+        publicCloudContacts: md.publicCloudContacts?.length ? md.publicCloudContacts : fallback.publicCloudContacts,
+        digitalContacts: md.digitalContacts?.length ? md.digitalContacts : fallback.digitalContacts,
+        cloudContacts: md.cloudContacts?.length ? md.cloudContacts : fallback.cloudContacts
+      };
+    },
+
+    async refreshData() {
+      try {
+        const result = await apiGet('initData');
+        if (result.success) this.normalizeInitData(result.data);
+      } catch (err) {
+        console.error(err);
+        alert('讀取 Google Sheet 資料失敗，請確認 Apps Script 部署權限與網址。');
+      }
+    },
+
+    async login() {
+      const result = await apiPost('login', {
+        account: this.loginForm.account,
+        password: this.loginForm.password
+      });
+
+      if (!result.success) {
+        alert(result.message || '登入失敗');
+        return;
+      }
+
+      this.isLoggedIn = true;
+      this.userAccount = result.user.userName || result.user.account;
+      this.view = 'dashboard';
+      await this.refreshData();
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    async register() {
+      if (!this.registerForm.account || !this.registerForm.password) {
+        alert('請輸入帳號與密碼');
+        return;
+      }
+
+      const result = await apiPost('register', this.registerForm);
+      if (!result.success) {
+        alert(result.message || '註冊失敗');
+        return;
+      }
+
+      alert('註冊成功，請返回登入');
+      this.registerForm = { account: '', password: '', userName: '' };
+      this.view = 'login';
+    },
+
+    logout() {
+      this.isLoggedIn = false;
+      this.view = 'login';
+      this.loginForm = { account: '', password: '' };
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    viewTitle() {
+      const titles = { dashboard: '儀表板總覽', customers: '客戶管理', projects: '案件管理', calendar: '行事曆', settings: '主檔維護' };
+      return titles[this.view] || '';
+    },
+
+    getFilteredLogs() {
+      const isDone = this.dashboardLogTab === 'history';
+      return this.logs
+        .filter(l => l.isDone === isDone)
+        .sort((a, b) => normalizeTimestamp(b.timestamp) - normalizeTimestamp(a.timestamp))
+        .slice(0, 10);
+    },
+
+    getCustomerName(pid) {
+      const proj = this.projects.find(p => p.projectId === pid);
+      const cust = this.customers.find(c => c.customerId === proj?.customerId);
+      return cust?.companyName || '未知';
+    },
+
+    getProjectName(pid) {
+      return this.projects.find(p => p.projectId === pid)?.projectName || '未知';
+    },
+
+    openProjectFromDashboard(pid) {
+      const proj = this.projects.find(p => p.projectId === pid);
+      if (proj) {
+        this.view = 'projects';
+        this.openProjectModal(proj);
+      }
+    },
+
+    openCustomerModal(c = null) {
+      if (c) {
+        this.editingCustomer = c;
+        this.customerForm = { ...c };
+        this.customerLocalContacts = JSON.parse(JSON.stringify(this.contacts.filter(con => con.customerId === c.customerId)));
+      } else {
+        this.editingCustomer = null;
+        this.customerForm = {
+          customerId: makeId('C'),
+          companyName: '',
+          taxId: '',
+          territory: this.masterData.territories[0] || '',
+          industry: '',
+          address: '',
+          phone: '',
+          updatedAt: todayString()
+        };
+        this.customerLocalContacts = [];
+      }
+      this.customerModalOpen = true;
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    closeCustomerModal() { this.customerModalOpen = false; },
+
+    addLocalContact() {
+      this.customerLocalContacts.push({
+        contactId: makeId('CON'),
+        customerId: this.customerForm.customerId,
+        name: '',
+        title: '',
+        phone: '',
+        mobile: '',
+        email: '',
+        updatedAt: todayString()
+      });
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    removeLocalContact(contactId) {
+      this.customerLocalContacts = this.customerLocalContacts.filter(c => c.contactId !== contactId);
+    },
+
+    async saveCustomer() {
+      if (!this.customerForm.companyName?.trim()) {
+        alert('請輸入公司名稱');
+        return;
+      }
+
+      const now = todayString();
+      this.customerForm.updatedAt = now;
+      this.customerLocalContacts = this.customerLocalContacts.map(con => ({
+        ...con,
+        contactId: con.contactId || makeId('CON'),
+        customerId: this.customerForm.customerId,
+        updatedAt: now
+      }));
+
+      const result = await apiPost('saveCustomer', {
+        customerForm: this.customerForm,
+        customerLocalContacts: this.customerLocalContacts
+      });
+
+      if (!result.success) {
+        alert(result.message || '客戶儲存失敗');
+        return;
+      }
+
+      await this.refreshData();
+      this.closeCustomerModal();
+    },
+
+    async deleteCustomer(customerId) {
+      if (!confirm('確定要刪除此客戶嗎？所有關聯資料也將移除。')) return;
+
+      const result = await apiPost('deleteCustomer', { customerId });
+      if (!result.success) {
+        alert(result.message || '刪除客戶失敗');
+        return;
+      }
+      await this.refreshData();
+    },
+
+    sortedProjects() {
+      return [...this.projects].sort((a, b) => {
+        if (this.projectSortBy === 'projectName') return (a.projectName || '').localeCompare(b.projectName || '');
+        return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+      });
+    },
+
+    getCustomerNameById(cid) {
+      return this.customers.find(c => c.customerId === cid)?.companyName || '';
+    },
+
+    countPendingLogs(pid) {
+      return this.logs.filter(l => l.projectId === pid && !l.isDone).length;
+    },
+
+    openProjectModal(p = null) {
+      if (p) {
+        this.editingProject = p;
+        this.projectForm = { ...p };
+      } else {
+        this.editingProject = null;
+        this.projectForm = {
+          projectId: makeId('P'),
+          customerId: this.customers[0]?.customerId || '',
+          projectName: '',
+          productType: this.masterData.productTypes[0] || '',
+          bd: this.masterData.bdList[0] || '',
+          opportunityDate: '',
+          closeDate: '',
+          status: this.masterData.projectStatuses[0] || '',
+          publicCloudContact: this.masterData.publicCloudContacts[0] || '',
+          digitalContact: this.masterData.digitalContacts[0] || '',
+          cloudContact: this.masterData.cloudContacts[0] || '',
+          updatedAt: todayString()
+        };
+      }
+      this.projectModalOpen = true;
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    closeProjectModal() { this.projectModalOpen = false; },
+
+    async saveProject() {
+      if (!this.projectForm.projectName?.trim()) {
+        alert('請輸入專案名稱');
+        return;
+      }
+
+      this.projectForm.updatedAt = todayString();
+      const result = await apiPost('saveProject', { projectForm: this.projectForm });
+      if (!result.success) {
+        alert(result.message || '案件儲存失敗');
+        return;
+      }
+
+      await this.refreshData();
+      this.closeProjectModal();
+    },
+
+    getProjectLogs() {
+      return this.logs
+        .filter(l => l.projectId === this.projectForm.projectId)
+        .sort((a, b) => normalizeTimestamp(b.timestamp) - normalizeTimestamp(a.timestamp));
+    },
+
+    async addNewLog() {
+      if (!this.newLogInput.trim()) return;
+
+      const now = new Date();
+      const log = {
+        logId: makeId('L'),
+        projectId: this.projectForm.projectId,
+        content: this.newLogInput,
+        isDone: false,
+        createdAt: now.toISOString().split('T')[0],
+        timestamp: now.getTime(),
+        updatedAt: now.toISOString().split('T')[0]
+      };
+
+      const result = await apiPost('saveLog', { log });
+      if (!result.success) {
+        alert(result.message || '新增進度失敗');
+        return;
+      }
+
+      this.logs.push(log);
+      this.newLogInput = '';
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    async saveExistingLog(log) {
+      const updated = {
+        ...log,
+        updatedAt: todayString(),
+        timestamp: normalizeTimestamp(log.timestamp)
+      };
+      const result = await apiPost('saveLog', { log: updated });
+      if (!result.success) alert(result.message || '進度更新失敗');
+    },
+
+    async toggleLogStatus(logId) {
+      const result = await apiPost('toggleLogStatus', { logId });
+      if (!result.success) {
+        alert(result.message || '更新失敗');
+        return;
+      }
+
+      const target = this.logs.find(l => l.logId === logId);
+      if (target) {
+        target.isDone = !target.isDone;
+        target.timestamp = Date.now();
+      }
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    async deleteLog(logId) {
+      const result = await apiPost('deleteLog', { logId });
+      if (!result.success) {
+        alert(result.message || '刪除失敗');
+        return;
+      }
+      this.logs = this.logs.filter(l => l.logId !== logId);
+    },
+
+    async updateLogDate(log, val) {
+      if (!val) { this.editingLogDateId = null; return; }
+      log.createdAt = val;
+      log.timestamp = new Date(val).getTime();
+      this.editingLogDateId = null;
+      await this.saveExistingLog(log);
+    }
+  }));
+});
+</script>
+
+
+    <!-- Alpine.js -->
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans" x-data="crmApp">
+
+    <!-- 1. 登入頁面 (Conditional Rendering) -->
+    <template x-if="!isLoggedIn">
+        <div class="min-h-screen flex items-center justify-center bg-slate-900 px-4">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md" x-show="view === 'login'">
+                <div class="text-center mb-8">
+                    <div class="inline-flex p-3 bg-blue-100 rounded-2xl text-blue-600 mb-4">
+                        <i data-lucide="briefcase" class="w-8 h-8"></i>
+                    </div>
+                    <h1 class="text-2xl font-bold text-slate-900">CRM 系統登入</h1>
+                </div>
+                <form @submit.prevent="login()" class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-1">帳號</label>
+                        <input type="text" x-model="loginForm.account" required class="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="請輸入帳號">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold text-slate-700 mb-1">密碼</label>
+                        <input type="password" x-model="loginForm.password" required class="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="請輸入密碼">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all">登入系統</button>
+                </form>
+                <p class="mt-6 text-center text-sm text-slate-500">
+                    還沒有帳號？ <button @click="view = 'register'" class="text-blue-600 font-bold hover:underline">立即註冊</button>
+                </p>
+            </div>
+            <!-- 註冊頁面 -->
+            <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md" x-show="view === 'register'" x-cloak>
+                <h1 class="text-2xl font-bold mb-6 text-center">註冊帳號</h1>
+                <div class="space-y-4">
+                    <input type="text" x-model="registerForm.account" placeholder="設定帳號" class="w-full px-4 py-2 border rounded-xl">
+                    <input type="password" x-model="registerForm.password" placeholder="設定密碼" class="w-full px-4 py-2 border rounded-xl">
+                    <input type="text" x-model="registerForm.userName" placeholder="使用者名稱（選填）" class="w-full px-4 py-2 border rounded-xl">
+                    <button @click="register()" class="w-full py-3 bg-slate-800 text-white font-bold rounded-xl">完成並返回登入</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- 2. 主系統內容 -->
+    <template x-if="isLoggedIn">
+        <div class="flex h-screen overflow-hidden">
+            <!-- Sidebar -->
+            <aside class="w-64 bg-slate-900 text-white flex flex-col shrink-0">
+                <div class="p-6 flex items-center gap-3">
+                    <div class="bg-blue-600 p-2 rounded-lg"><i data-lucide="briefcase"></i></div>
+                    <h1 class="text-xl font-bold tracking-tight">CRM Admin</h1>
+                </div>
+                <nav class="flex-1 px-4 space-y-1">
+                    <button @click="view = 'dashboard'" :class="view === 'dashboard' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                        <i data-lucide="layout-dashboard" class="w-5 h-5"></i><span>首頁儀表板</span>
+                    </button>
+                    <button @click="view = 'customers'" :class="view === 'customers' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                        <i data-lucide="building-2" class="w-5 h-5"></i><span>客戶管理</span>
+                    </button>
+                    <button @click="view = 'projects'" :class="view === 'projects' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                        <i data-lucide="briefcase" class="w-5 h-5"></i><span>案件管理</span>
+                    </button>
+                    <button @click="view = 'calendar'" :class="view === 'calendar' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                        <i data-lucide="calendar" class="w-5 h-5"></i><span>行事曆統整</span>
+                    </button>
+                    <div class="my-4 border-t border-slate-800 pt-4">
+                        <button @click="view = 'settings'" :class="view === 'settings' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                            <i data-lucide="settings" class="w-5 h-5"></i><span>基本資料維護</span>
+                        </button>
+                    </div>
+                </nav>
+                <div class="p-4 border-t border-slate-800 flex items-center justify-between">
+                    <div class="flex items-center gap-2 overflow-hidden">
+                        <div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold" x-text="userAccount.substring(0,2)"></div>
+                        <p class="text-xs font-bold truncate" x-text="userAccount"></p>
+                    </div>
+                    <button @click="logout()" class="text-slate-400 hover:text-red-400"><i data-lucide="log-out" class="w-5 h-5"></i></button>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="flex-1 overflow-auto flex flex-col bg-slate-50">
+                <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-10 shrink-0">
+                    <h2 class="text-lg font-bold text-slate-800" x-text="viewTitle()"></h2>
+                    <div class="relative">
+                        <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
+                        <input type="text" placeholder="快速搜尋..." class="pl-10 pr-4 py-2 bg-slate-100 border-none rounded-full text-sm w-64 focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                    </div>
+                </header>
+
+                <div class="p-8 flex-1">
+                    <!-- Dashboard -->
+                    <div x-show="view === 'dashboard'" class="space-y-8 animate-in fade-in duration-500">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between">
+                                <div><p class="text-sm font-bold text-slate-500 mb-1">客戶總數</p><p class="text-3xl font-black text-slate-900" x-text="customers.length"></p></div>
+                                <div class="p-4 rounded-2xl bg-blue-50 text-blue-600"><i data-lucide="users"></i></div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between">
+                                <div><p class="text-sm font-bold text-slate-500 mb-1">進行中案件</p><p class="text-3xl font-black text-slate-900" x-text="projects.filter(p => p.status !== '成案' && p.status !== 'Fail').length"></p></div>
+                                <div class="p-4 rounded-2xl bg-amber-50 text-amber-600"><i data-lucide="briefcase"></i></div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between">
+                                <div><p class="text-sm font-bold text-slate-500 mb-1">待辦案件進度</p><p class="text-3xl font-black text-slate-900" x-text="logs.filter(l => !l.isDone).length"></p></div>
+                                <div class="p-4 rounded-2xl bg-indigo-50 text-indigo-600"><i data-lucide="list-todo"></i></div>
+                            </div>
+                        </div>
+
+                        <!-- 案件動態列表 -->
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex items-center justify-between mb-6">
+                                <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-lucide="activity" class="text-emerald-500"></i> 最新案件動態</h3>
+                                <div class="flex bg-slate-100 p-1 rounded-xl">
+                                    <button @click="dashboardLogTab = 'pending'" :class="dashboardLogTab === 'pending' ? 'bg-white shadow-sm' : 'text-slate-500'" class="px-4 py-1.5 text-xs font-bold rounded-lg transition-all">未完成待辦</button>
+                                    <button @click="dashboardLogTab = 'history'" :class="dashboardLogTab === 'history' ? 'bg-white shadow-sm' : 'text-slate-500'" class="px-4 py-1.5 text-xs font-bold rounded-lg transition-all">歷史結案紀錄</button>
+                                </div>
+                            </div>
+                            <div class="space-y-3">
+                                <template x-for="log in getFilteredLogs()" :key="log.logId">
+                                    <div @click="openProjectFromDashboard(log.projectId)" class="flex items-center gap-4 p-3 bg-slate-50 rounded-xl border border-transparent hover:border-blue-300 hover:bg-white hover:shadow-md transition-all cursor-pointer group">
+                                        <div class="shrink-0">
+                                            <i :data-lucide="log.isDone ? 'check-circle-2' : 'clock'" :class="log.isDone ? 'text-emerald-500' : 'text-amber-500'"></i>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex items-center gap-2 mb-0.5 text-[10px] font-bold">
+                                                <span class="bg-slate-200 px-2 py-0.5 rounded text-slate-500" x-text="getCustomerName(log.projectId)"></span>
+                                                <span class="text-blue-600 truncate" x-text="getProjectName(log.projectId)"></span>
+                                            </div>
+                                            <p class="text-sm font-semibold truncate group-hover:text-blue-600 transition-colors" x-text="log.content"></p>
+                                        </div>
+                                        <div class="text-[11px] text-slate-400 font-bold whitespace-nowrap flex items-center gap-1.5">
+                                            <i data-lucide="calendar" class="w-3 h-3"></i><span x-text="log.createdAt"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Customers List -->
+                    <div x-show="view === 'customers'" class="space-y-6">
+                        <div class="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                            <h3 class="text-slate-500 font-bold italic uppercase tracking-tighter">Customer Directory</h3>
+                            <button @click="openCustomerModal()" class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all">
+                                <i data-lucide="user-plus" class="w-4 h-4"></i> 新增客戶資料
+                            </button>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-slate-50 text-slate-500 border-b border-slate-100">
+                                    <tr>
+                                        <th class="px-6 py-4 font-bold">公司名稱</th>
+                                        <th class="px-6 py-4 font-bold">管區</th>
+                                        <th class="px-6 py-4 font-bold">產業</th>
+                                        <th class="px-6 py-4 font-bold text-center">窗口數</th>
+                                        <th class="px-6 py-4 font-bold">最後更新</th>
+                                        <th class="px-6 py-4 font-bold text-center">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-50">
+                                    <template x-for="c in customers" :key="c.customerId">
+                                        <tr class="hover:bg-blue-50/40 transition-colors group">
+                                            <td class="px-6 py-5 font-bold text-slate-900 group-hover:text-blue-600 transition-colors" x-text="c.companyName"></td>
+                                            <td class="px-6 py-5"><span class="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold" x-text="c.territory"></span></td>
+                                            <td class="px-6 py-5 text-slate-500 font-medium" x-text="c.industry"></td>
+                                            <td class="px-6 py-5 text-center font-bold text-slate-400" x-text="contacts.filter(con => con.customerId === c.customerId).length"></td>
+                                            <td class="px-6 py-5 text-slate-500 font-medium" x-text="c.updatedAt"></td>
+                                            <td class="px-6 py-5">
+                                                <div class="flex justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button @click="openCustomerModal(c)" class="p-2.5 bg-white border border-slate-100 rounded-xl text-slate-400 hover:text-blue-600 shadow-sm"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                                                    <button @click="deleteCustomer(c.customerId)" class="p-2.5 bg-white border border-slate-100 rounded-xl text-slate-400 hover:text-red-600 shadow-sm"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Projects List -->
+                    <div x-show="view === 'projects'" class="space-y-6">
+                        <div class="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex items-center gap-3">
+                                <i data-lucide="arrow-up-down" class="text-slate-400 w-4 h-4"></i>
+                                <select x-model="projectSortBy" class="bg-slate-50 border-none rounded-lg px-4 py-2 text-sm font-bold focus:ring-0 cursor-pointer outline-none">
+                                    <option value="updatedAt">依更新日期排序</option>
+                                    <option value="projectName">依案件名稱排序</option>
+                                </select>
+                            </div>
+                            <button @click="openProjectModal()" class="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all">
+                                <i data-lucide="plus" class="w-4 h-4"></i> 建立全新案件
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                            <template x-for="p in sortedProjects()" :key="p.projectId">
+                                <div @click="openProjectModal(p)" class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden cursor-pointer">
+                                    <div :class="p.status === '成案' ? 'bg-emerald-500' : p.status === 'Fail' ? 'bg-red-500' : 'bg-indigo-500'" class="absolute top-0 left-0 w-1.5 h-full"></div>
+                                    <div class="flex justify-between items-start mb-4">
+                                        <span :class="p.status === '成案' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'" class="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest" x-text="p.status"></span>
+                                        <template x-if="countPendingLogs(p.projectId) > 0">
+                                            <span class="flex items-center gap-1 text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-full">
+                                                <i data-lucide="clock" class="w-2.5 h-2.5"></i> <span x-text="countPendingLogs(p.projectId)"></span> 待辦
+                                            </span>
+                                        </template>
+                                    </div>
+                                    <h4 class="font-bold text-slate-900 text-lg mb-1 group-hover:text-indigo-600 transition-colors" x-text="p.projectName"></h4>
+                                    <p class="text-xs text-slate-400 font-bold flex items-center gap-2 mb-4 tracking-tight italic">
+                                        <i data-lucide="building-2" class="w-3 h-3"></i> <span x-text="getCustomerNameById(p.customerId)"></span>
+                                    </p>
+                                    <div class="flex items-center gap-2 mb-6">
+                                        <span class="text-[10px] font-black bg-slate-100 px-2 py-0.5 rounded text-slate-500 uppercase" x-text="p.productType"></span>
+                                        <span class="text-[10px] font-black bg-blue-50 px-2 py-0.5 rounded text-blue-600 uppercase" x-text="'BD: ' + p.bd"></span>
+                                    </div>
+                                    <div class="pt-4 border-t border-slate-50 flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase">
+                                        <div class="flex -space-x-1.5">
+                                            <div class="w-5 h-5 rounded-full bg-blue-100 border border-white flex items-center justify-center text-[8px]" title="公雲">公</div>
+                                            <div class="w-5 h-5 rounded-full bg-indigo-100 border border-white flex items-center justify-center text-[8px]" title="數產">數</div>
+                                            <div class="w-5 h-5 rounded-full bg-emerald-100 border border-white flex items-center justify-center text-[8px]" title="雲端">雲</div>
+                                        </div>
+                                        <span x-text="'最後異動: ' + p.updatedAt"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Calendar, Settings Views (簡易處理) -->
+                    <div x-show="view === 'calendar'" class="bg-white rounded-2xl border p-20 text-center text-slate-400 italic font-bold">
+                        行事曆统整畫面 (依據進度日期彙整顯示最多3筆)
+                    </div>
+                    
+                    <div x-show="view === 'settings'" class="bg-white rounded-2xl border p-20 text-center text-slate-400 italic font-bold">
+                        基本資料維護 (管理下拉選單與 BD/窗口名單)
+                    </div>
+                </div>
+            </main>
+        </div>
+    </template>
+
+    <!-- 3. 客戶編輯 Modal -->
+    <template x-if="customerModalOpen">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col" @click.away="closeCustomerModal()">
+                <div class="p-6 border-b flex items-center justify-between bg-slate-50/50 shrink-0">
+                    <h3 class="text-xl font-bold flex items-center gap-2"><i data-lucide="building-2" class="text-blue-600"></i> 客戶基本資料編輯</h3>
+                    <button @click="closeCustomerModal()"><i data-lucide="x" class="text-slate-400"></i></button>
+                </div>
+                <div class="p-8 overflow-y-auto custom-scrollbar space-y-10">
+                    <section>
+                        <h4 class="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">公司基本資訊</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="space-y-4">
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">公司名稱</span>
+                                    <input type="text" x-model="customerForm.companyName" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none focus:ring-2 focus:ring-blue-500">
+                                </label>
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">公司統編</span>
+                                    <input type="text" x-model="customerForm.taxId" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none">
+                                </label>
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">管區</span>
+                                    <select x-model="customerForm.territory" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none">
+                                        <template x-for="t in masterData.territories"><option :value="t" x-text="t"></option></template>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="space-y-4">
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">公司產業</span>
+                                    <input type="text" x-model="customerForm.industry" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none">
+                                </label>
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">公司地址</span>
+                                    <input type="text" x-model="customerForm.address" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none">
+                                </label>
+                                <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">公司總機</span>
+                                    <input type="text" x-model="customerForm.phone" class="w-full px-4 py-2 bg-slate-50 border rounded-xl font-bold outline-none">
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+                    
+                    <section class="border-t pt-10">
+                        <div class="flex items-center justify-between mb-6">
+                            <h4 class="text-xs font-black text-blue-600 uppercase tracking-widest flex items-center gap-2"><i data-lucide="users" class="w-4 h-4"></i> 聯絡窗口資訊</h4>
+                            <button @click="addLocalContact()" class="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-xs font-bold hover:bg-blue-600 hover:text-white transition-all">新增窗口</button>
+                        </div>
+                        <div class="space-y-4">
+                            <template x-for="(con, idx) in customerLocalContacts" :key="con.contactId">
+                                <div class="p-6 bg-slate-50 rounded-2xl border border-slate-100 relative group animate-in zoom-in-95">
+                                    <button @click="removeLocalContact(con.contactId)" class="absolute top-4 right-4 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                    <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                                        <input type="text" x-model="con.name" placeholder="姓名" class="bg-white border rounded-lg px-3 py-1.5 text-xs font-bold outline-none">
+                                        <input type="text" x-model="con.title" placeholder="職稱" class="bg-white border rounded-lg px-3 py-1.5 text-xs font-bold outline-none">
+                                        <input type="text" x-model="con.phone" placeholder="市話" class="bg-white border rounded-lg px-3 py-1.5 text-xs font-bold outline-none">
+                                        <input type="text" x-model="con.mobile" placeholder="手機" class="bg-white border rounded-lg px-3 py-1.5 text-xs font-bold outline-none">
+                                        <input type="text" x-model="con.email" placeholder="EMAIL" class="bg-white border rounded-lg px-3 py-1.5 text-xs font-bold outline-none">
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+                <div class="p-6 bg-slate-50 border-t flex justify-end gap-3 shrink-0">
+                    <button @click="closeCustomerModal()" class="px-6 py-2.5 rounded-xl text-slate-500 font-bold hover:bg-slate-200">取消返回</button>
+                    <button @click="saveCustomer()" class="px-10 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95">儲存客戶資料</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- 4. 案件編輯 Modal -->
+    <template x-if="projectModalOpen">
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col" @click.away="closeProjectModal()">
+                <div class="p-6 border-b flex items-center justify-between bg-slate-50/50 shrink-0">
+                    <h3 class="text-xl font-bold flex items-center gap-2"><i data-lucide="briefcase" class="text-indigo-600"></i> 案件與進度詳細管理</h3>
+                    <button @click="closeProjectModal()"><i data-lucide="x" class="text-slate-400"></i></button>
+                </div>
+                
+                <div class="flex flex-col lg:flex-row flex-1 overflow-hidden">
+                    <!-- 左：案件表單 -->
+                    <div class="w-full lg:w-1/2 p-8 overflow-y-auto border-r border-slate-100 space-y-8 custom-scrollbar">
+                        <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">案件核心欄位</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <label class="md:col-span-2 block"><span class="text-[10px] font-black text-slate-400 uppercase">隸屬客戶</span>
+                                <select x-model="projectForm.customerId" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                                    <template x-for="c in customers"><option :value="c.customerId" x-text="c.companyName"></option></template>
+                                </select>
+                            </label>
+                            <label class="md:col-span-2 block"><span class="text-[10px] font-black text-slate-400 uppercase">專案名稱</span>
+                                <input type="text" x-model="projectForm.projectName" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none focus:ring-2 focus:ring-indigo-500">
+                            </label>
+                            <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">產品類別</span>
+                                <select x-model="projectForm.productType" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                                    <template x-for="t in masterData.productTypes"><option :value="t" x-text="t"></option></template>
+                                </select>
+                            </label>
+                            <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">BD (業務開發)</span>
+                                <select x-model="projectForm.bd" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                                    <template x-for="b in masterData.bdList"><option :value="b" x-text="b"></option></template>
+                                </select>
+                            </label>
+                            <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">當前案件狀態</span>
+                                <select x-model="projectForm.status" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                                    <template x-for="s in masterData.projectStatuses"><option :value="s" x-text="s"></option></template>
+                                </select>
+                            </label>
+                            <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">商機開始日期</span>
+                                <input type="date" x-model="projectForm.opportunityDate" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                            </label>
+                            <label class="block"><span class="text-[10px] font-black text-slate-400 uppercase">預計結案日期</span>
+                                <input type="date" x-model="projectForm.closeDate" class="w-full px-4 py-2.5 bg-slate-50 border rounded-xl font-bold outline-none">
+                            </label>
+                        </div>
+                        <div class="pt-6 space-y-4 border-t border-slate-50">
+                            <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">內部窗口配置</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <label class="block text-[10px] font-black text-slate-400 uppercase">公雲科窗口
+                                    <select x-model="projectForm.publicCloudContact" class="w-full bg-white border rounded px-2 py-1.5 font-bold outline-none"><template x-for="i in masterData.publicCloudContacts"><option :value="i" x-text="i"></option></template></select>
+                                </label>
+                                <label class="block text-[10px] font-black text-slate-400 uppercase">數產處窗口
+                                    <select x-model="projectForm.digitalContact" class="w-full bg-white border rounded px-2 py-1.5 font-bold outline-none"><template x-for="i in masterData.digitalContacts"><option :value="i" x-text="i"></option></template></select>
+                                </label>
+                                <label class="block text-[10px] font-black text-slate-400 uppercase">雲端處窗口
+                                    <select x-model="projectForm.cloudContact" class="w-full bg-white border rounded px-2 py-1.5 font-bold outline-none"><template x-for="i in masterData.cloudContacts"><option :value="i" x-text="i"></option></template></select>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右：進度管理 -->
+                    <div class="w-full lg:w-1/2 p-8 flex flex-col bg-slate-50/40 overflow-hidden">
+                        <h4 class="text-xs font-black text-indigo-600 uppercase tracking-widest flex items-center justify-between mb-6">
+                            <span>案件進度與待辦日誌 (點擊可編輯)</span>
+                        </h4>
+                        <div class="mb-6 flex gap-2">
+                            <input type="text" x-model="newLogInput" @keydown.enter="addNewLog()" placeholder="新增進度內容..." class="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm font-bold shadow-sm">
+                            <button @click="addNewLog()" class="p-2 bg-indigo-600 text-white rounded-xl shadow-md hover:bg-indigo-700 active:scale-95"><i data-lucide="plus"></i></button>
+                        </div>
+                        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-4 pr-2">
+                            <template x-for="log in getProjectLogs()" :key="log.logId">
+                                <div class="flex gap-4 p-4 bg-white rounded-2xl shadow-sm border border-slate-100 hover:border-indigo-200 transition-all group">
+                                    <button @click="toggleLogStatus(log.logId)" class="shrink-0 mt-0.5">
+                                        <i :data-lucide="log.isDone ? 'check-square' : 'square'" :class="log.isDone ? 'text-emerald-500' : 'text-slate-300'"></i>
+                                    </button>
+                                    <div class="min-w-0 flex-1">
+                                        <!-- 文字編輯 -->
+                                        <div x-show="editingLogContentId !== log.logId" @click="editingLogContentId = log.logId" :class="log.isDone ? 'text-slate-300 line-through' : 'text-slate-800'" class="text-sm font-bold mb-1 cursor-pointer hover:text-indigo-600" x-text="log.content"></div>
+                                        <input x-show="editingLogContentId === log.logId" @blur="editingLogContentId = null; saveExistingLog(log)" @keydown.enter="editingLogContentId = null; saveExistingLog(log)" type="text" x-model="log.content" class="w-full text-sm font-bold border-b border-indigo-400 bg-indigo-50 outline-none px-1 rounded" x-init="$nextTick(() => { if(editingLogContentId === log.logId) $el.focus() })">
+                                        
+                                        <!-- 日期編輯 -->
+                                        <div class="flex items-center gap-2 mt-1">
+                                            <div x-show="editingLogDateId !== log.logId" @click="editingLogDateId = log.logId" class="text-[10px] font-bold text-slate-400 italic cursor-pointer hover:bg-indigo-50 px-1 rounded flex items-center gap-1">
+                                                <i data-lucide="calendar" class="w-3 h-3"></i> <span x-text="log.createdAt"></span>
+                                            </div>
+                                            <input x-show="editingLogDateId === log.logId" @blur="updateLogDate(log, $el.value)" @keydown.enter="updateLogDate(log, $el.value)" type="date" :value="log.createdAt" class="text-[10px] font-bold border border-slate-200 rounded px-1 outline-none" x-init="$nextTick(() => { if(editingLogDateId === log.logId) $el.focus() })">
+                                        </div>
+                                    </div>
+                                    <button @click="deleteLog(log.logId)" class="text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-6 bg-slate-50 border-t flex justify-end gap-3 shrink-0">
+                    <button @click="closeProjectModal()" class="px-6 py-2.5 rounded-xl text-slate-500 font-bold">關閉視窗</button>
+                    <button @click="saveProject()" class="px-10 py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 transition-all">儲存並更新</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+</body>
+</html>
