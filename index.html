@@ -262,33 +262,47 @@ document.addEventListener('alpine:init', () => {
     },
 
     async saveCustomer() {
-      if (!this.customerForm.companyName?.trim()) {
-        alert('請輸入公司名稱');
-        return;
-      }
+  if (this.loading) return;
 
-      const now = todayString();
-      this.customerForm.updatedAt = now;
-      this.customerLocalContacts = this.customerLocalContacts.map(con => ({
-        ...con,
-        contactId: con.contactId || makeId('CON'),
-        customerId: this.customerForm.customerId,
-        updatedAt: now
-      }));
+  if (!this.customerForm.companyName?.trim()) {
+    alert('請輸入公司名稱');
+    return;
+  }
 
-      const result = await apiPost('saveCustomer', {
-        customerForm: this.customerForm,
-        customerLocalContacts: this.customerLocalContacts
-      });
+  this.loading = true;
 
-      if (!result.success) {
-        alert(result.message || '客戶儲存失敗');
-        return;
-      }
+  const now = todayString();
+  this.customerForm.updatedAt = now;
+  this.customerLocalContacts = this.customerLocalContacts.map(con => ({
+    ...con,
+    contactId: con.contactId || makeId('CON'),
+    customerId: this.customerForm.customerId,
+    updatedAt: now
+  }));
 
-this.closeCustomerModal();
-await this.refreshData();
-    },
+  const payload = {
+    customerForm: { ...this.customerForm },
+    customerLocalContacts: JSON.parse(JSON.stringify(this.customerLocalContacts))
+  };
+
+  this.closeCustomerModal();
+
+  try {
+    const result = await apiPost('saveCustomer', payload);
+
+    if (!result.success) {
+      alert(result.message || '客戶儲存失敗');
+      return;
+    }
+
+    await this.refreshData();
+  } catch (err) {
+    console.error(err);
+    alert('客戶儲存失敗，請稍後再試');
+  } finally {
+    this.loading = false;
+  }
+},
 
 async deleteCustomer(customerId) {
   if (!confirm('確定要刪除此客戶嗎？所有關聯資料也將移除。')) return;
@@ -745,7 +759,12 @@ await this.refreshData();
                 </div>
                 <div class="p-6 bg-slate-50 border-t flex justify-end gap-3 shrink-0">
                     <button @click="closeCustomerModal()" class="px-6 py-2.5 rounded-xl text-slate-500 font-bold hover:bg-slate-200">取消返回</button>
-                    <button @click="saveCustomer()" class="px-10 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95">儲存客戶資料</button>
+<button
+  @click="saveCustomer()"
+  :disabled="loading"
+  x-text="loading ? '儲存中...' : '儲存客戶資料'"
+  class="px-10 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+</button>
                 </div>
             </div>
         </div>
