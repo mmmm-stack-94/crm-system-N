@@ -292,21 +292,23 @@ if (!result.success) {
   };
 
 
-  try {
-    const result = await apiPost('saveCustomer', payload);
+try {
+  const result = await apiPost('saveCustomer', payload);
 
-    if (!result.success) {
-      alert(result.message || '客戶儲存失敗');
-      return;
-    }
-
-    await this.refreshData();
-  } catch (err) {
-    console.error(err);
-    alert('客戶儲存失敗，請稍後再試');
-  } finally {
-    this.loading = false;
+  if (!result.success) {
+    alert(result.message || '客戶儲存失敗');
+    return;
   }
+
+  await this.refreshData();
+  this.closeCustomerModal(); // ⭐ 關閉視窗
+
+} catch (err) {
+  console.error(err);
+  alert('客戶儲存失敗，請稍後再試');
+} finally {
+  this.loading = false;
+}
 },
 
 async deleteCustomer(customerId) {
