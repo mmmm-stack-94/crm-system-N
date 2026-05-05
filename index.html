@@ -93,7 +93,13 @@ document.addEventListener('alpine:init', () => {
     projectForm: {},
 
     async init() {
-      await this.refreshData();
+if (!result.success) {
+  alert(result.message || '客戶儲存失敗');
+  return;
+}
+        setTimeout(async () => {
+  await this.refreshData();
+}, 300);
       this.$nextTick(() => { lucide.createIcons(); });
     },
 
@@ -285,7 +291,6 @@ document.addEventListener('alpine:init', () => {
     customerLocalContacts: JSON.parse(JSON.stringify(this.customerLocalContacts))
   };
 
-  this.closeCustomerModal();
 
   try {
     const result = await apiPost('saveCustomer', payload);
@@ -700,7 +705,12 @@ await this.refreshData();
     <!-- 3. 客戶編輯 Modal -->
     <template x-if="customerModalOpen">
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4" @click.self="closeCustomerModal()">
-            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div class="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col relative">
+                <div x-show="loading" class="absolute inset-0 bg-white/70 z-50 flex items-center justify-center rounded-3xl">
+  <div class="bg-white px-8 py-5 rounded-2xl shadow-xl font-bold text-blue-600">
+    儲存中，請稍候...
+  </div>
+</div>
                 <div class="p-6 border-b flex items-center justify-between bg-slate-50/50 shrink-0">
                     <h3 class="text-xl font-bold flex items-center gap-2"><i data-lucide="building-2" class="text-blue-600"></i> 客戶基本資料編輯</h3>
                     <button @click="closeCustomerModal()"><i data-lucide="x" class="text-slate-400"></i></button>
